@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 
@@ -36,7 +36,10 @@ class Event(dict):
         return self["duration"]
 
     def to_json_dict(self):
-        return {"timestamp": self.timestamp.isoformat(), "duration": self.duration, "data": self.data}
+        dur = self.duration
+        if isinstance(dur, timedelta):
+            dur = dur.total_seconds()
+        return {"timestamp": self.timestamp.isoformat(), "duration": dur, "data": self.data}
 
     def to_json_str(self):
         import json
