@@ -12,6 +12,8 @@ from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from typing import Dict, Any, List
 
+from .linux_input import monitor_alive, snapshot as linux_snapshot, start_monitor, stop_monitor
+
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)
 
@@ -41,22 +43,16 @@ class KeyboardListener(EventFactory):
     def __init__(self):
         EventFactory.__init__(self)
         self.logger = logger.getChild("keyboard")
-        self._listener = None
+        self._cursor = 0
 
     def start(self):
-        from pynput import keyboard
-
-        self._listener = keyboard.Listener(
-            on_press=self.on_press, on_release=self.on_release
-        )
-        self._listener.start()
+        start_monitor()
 
     def stop(self):
-        if self._listener is not None:
-            self._listener.stop()
+        stop_monitor()
 
     def is_alive(self) -> bool:
-        return self._listener is not None and self._listener.is_alive()
+        return monitor_alive()
 
     def _reset_data(self):
         self.event_data = {"presses": 0}
@@ -71,13 +67,23 @@ class KeyboardListener(EventFactory):
         # self.logger.debug(f"Release: {key}")
         pass
 
+    def next_event(self) -> dict:
+        data, self._cursor, _ = linux_snapshot("keyboard", self._cursor)
+        self._reset_data()
+        self.event_data.update(data)
+        return data
+
+    def has_new_event(self) -> bool:
+        _, _, has_event = linux_snapshot("keyboard", self._cursor)
+        return has_event
+
 
 class MouseListener(EventFactory):
     def __init__(self):
         EventFactory.__init__(self)
         self.logger = logger.getChild("mouse")
         self.pos = None
-        self._listener = None
+        self._cursor = 0
 
     def _reset_data(self):
         self.event_data = defaultdict(int)
@@ -86,19 +92,13 @@ class MouseListener(EventFactory):
         )
 
     def start(self):
-        from pynput import mouse
-
-        self._listener = mouse.Listener(
-            on_move=self.on_move, on_click=self.on_click, on_scroll=self.on_scroll
-        )
-        self._listener.start()
+        start_monitor()
 
     def stop(self):
-        if self._listener is not None:
-            self._listener.stop()
+        stop_monitor()
 
     def is_alive(self) -> bool:
-        return self._listener is not None and self._listener.is_alive()
+        return monitor_alive()
 
     def on_move(self, x, y):
         newpos = (x, y)
@@ -126,23 +126,29 @@ class MouseListener(EventFactory):
         self.event_data["scrollY"] += abs(scrolly)
         self.new_event.set()
 
+    def next_event(self) -> dict:
+        data, self._cursor, _ = linux_snapshot("mouse", self._cursor)
+        self._reset_data()
+        self.event_data.update(data)
+        return data
+
+    def has_new_event(self) -> bool:
+        _, _, has_event = linux_snapshot("mouse", self._cursor)
+        return has_event
+
 
 class GamepadListener(EventFactory):
-    """Listens for gamepad/joystick button events via evdev (Linux only, optional).
+    """Optional gamepad listener.
 
-    Requires the ``evdev`` package and read access to ``/dev/input/`` device files.
-    On most distros users in the ``input`` group have the required access.
-
-    Only button press events are counted (not releases), so a held button does
-    not continuously trigger "not AFK".  Analog axis events are intentionally
-    ignored to avoid false positives from stick drift.
+    This vendored build does not depend on an external gamepad package, so the
+    listener stays disabled unless a local implementation is added later.
     """
 
     def __init__(self):
         EventFactory.__init__(self)
         self.logger = logger.getChild("gamepad")
-        self._threads: List[threading.Thread] = []
-        self._devices = []  # track open devices for cleanup in stop()
+        self._threads = []
+        self._devices = []
         self._stop_event = threading.Event()
 
     def _reset_data(self):
@@ -153,119 +159,13 @@ class GamepadListener(EventFactory):
     # ------------------------------------------------------------------
 
     def start(self):
-        try:
-            import evdev  # noqa: F401
-        except ImportError:
-            self.logger.debug(
-                "evdev not installed; gamepad detection unavailable. "
-                "Install it with: pip install evdev"
-            )
-            return
-
-        devices = self._find_gamepads()
-        if not devices:
-            self.logger.debug("No gamepads/joysticks found in /dev/input/")
-            return
-
-        self.logger.info(
-            "Gamepad listener started for %d device(s): %s",
-            len(devices),
-            [d.name for d in devices],
-        )
+        self.logger.debug("Gamepad listener disabled in vendored build")
         self._stop_event.clear()
-        self._devices = list(devices)  # keep references for cleanup
-        for device in devices:
-            t = threading.Thread(
-                target=self._read_events,
-                args=(device,),
-                name=f"gamepad-{device.path}",
-                daemon=True,
-            )
-            t.start()
-            self._threads.append(t)
 
     def stop(self):
         self._stop_event.set()
-        # Close devices to unblock threads stuck in read_loop()
-        # (the blocking select() call is released when the FD is closed)
-        for device in self._devices:
-            try:
-                device.close()
-            except (OSError, IOError):
-                pass
         self._devices.clear()
-        # Wait briefly for threads to finish
-        for t in self._threads:
-            t.join(timeout=2.0)
         self._threads.clear()
 
     def is_alive(self) -> bool:
-        return any(t.is_alive() for t in self._threads)
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    def _find_gamepads(self):
-        """Return all readable /dev/input/ devices that look like gamepads."""
-        import evdev
-
-        gamepads = []
-        for path in evdev.list_devices():
-            try:
-                device = evdev.InputDevice(path)
-            except (OSError, PermissionError):
-                continue
-            if self._is_gamepad(device):
-                gamepads.append(device)
-            else:
-                # Close non-gamepad devices to avoid FD leaks
-                device.close()
-        return gamepads
-
-    @staticmethod
-    def _is_gamepad(device) -> bool:
-        """Return True if *device* appears to be a gamepad or joystick."""
-        import evdev
-
-        caps = device.capabilities()
-        if evdev.ecodes.EV_KEY not in caps:
-            return False
-        # A subset of button codes that only appear on gamepads/joysticks
-        # Note: BTN_GAMEPAD == BTN_SOUTH (both 0x130) in the Linux input subsystem;
-        # BTN_SOUTH is kept as the more descriptive name and BTN_GAMEPAD omitted.
-        gamepad_btns = {
-            evdev.ecodes.BTN_SOUTH,  # Xbox A / PS Cross (also == BTN_GAMEPAD)
-            evdev.ecodes.BTN_EAST,  # Xbox B / PS Circle
-            evdev.ecodes.BTN_NORTH,  # Xbox Y / PS Triangle
-            evdev.ecodes.BTN_WEST,  # Xbox X / PS Square
-            evdev.ecodes.BTN_JOYSTICK,  # generic joystick button
-            evdev.ecodes.BTN_TRIGGER,  # joystick trigger
-            evdev.ecodes.BTN_THUMB,  # joystick thumb
-            evdev.ecodes.BTN_TOP,  # joystick top
-        }
-        device_btns = set(caps[evdev.ecodes.EV_KEY])
-        return bool(device_btns & gamepad_btns)
-
-    def _read_events(self, device) -> None:
-        """Read button events from *device* until stop() is called."""
-        import evdev
-
-        try:
-            for event in device.read_loop():
-                if self._stop_event.is_set():
-                    break
-                # Count button *press* events only (value == 1)
-                if event.type == evdev.ecodes.EV_KEY and event.value == 1:
-                    # self.logger.debug(f"Gamepad button press: {event.code}")
-                    self.event_data["buttons"] += 1
-                    self.new_event.set()
-        except (OSError, IOError):
-            # Device disconnected or permission lost — stop quietly
-            self.logger.debug("Gamepad device %s disconnected", device.path)
-        finally:
-            # Always close the device FD on thread exit
-            try:
-                device.close()
-            except (OSError, IOError):
-                pass
+        return False

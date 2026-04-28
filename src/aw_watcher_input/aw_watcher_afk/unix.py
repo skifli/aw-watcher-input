@@ -20,8 +20,7 @@ class LastInputUnix:
         self.keyboardListener = KeyboardListener()
         self.keyboardListener.start()
 
-        # Optional: gamepad support via evdev (Linux only).
-        # Starts silently if evdev is not installed or no gamepads are found.
+        # Optional gamepad support is disabled in the fully vendored build.
         self.gamepadListener = GamepadListener()
         self.gamepadListener.start()
 
@@ -37,7 +36,7 @@ class LastInputUnix:
     def _check_listeners(self):
         """Check if input listeners are still alive, restart if dead.
 
-        Pynput listeners can silently die when the X server restarts
+        Input listeners can silently die when the X server restarts
         (e.g. after suspend/resume, display server crash, or session switch).
         Without this check, the watcher would permanently report AFK.
 
