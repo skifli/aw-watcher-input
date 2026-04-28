@@ -5,7 +5,7 @@ from time import sleep
 import aw_client
 import click
 from aw_core import Event
-from aw_watcher_afk.listeners import KeyboardListener, MouseListener
+from .aw_watcher_afk.listeners import KeyboardListener, MouseListener
 
 logger = logging.getLogger(__name__)
 
