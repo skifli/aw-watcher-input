@@ -1,7 +1,7 @@
 from aw_core.log import setup_logging
 
-from aw_watcher_afk.afk import AFKWatcher
-from aw_watcher_afk.config import parse_args
+from .afk import AFKWatcher
+from .config import parse_args
 
 
 def main() -> None:
