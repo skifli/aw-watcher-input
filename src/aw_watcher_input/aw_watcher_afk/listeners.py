@@ -262,12 +262,17 @@ class KeyboardListener(EventFactory):
                 if not line:
                     continue
 
-                if 'KeyPress' in line or 'KeyRelease' in line or 'ButtonPress' in line:
+                if '(KeyPress)' in line:
                     self.event_data["presses"] += 1
                     self.new_event.set()
                     self.logger.debug(f"X11 keyboard event: {line}")
-                elif 'Motion' in line:
+                elif '(ButtonPress)' in line:
                     self.event_data["presses"] += 1
+                    self.new_event.set()
+                    self.logger.debug(f"X11 pointer button event: {line}")
+                elif '(Motion)' in line:
+                    self.event_data["deltaX"] += 1
+                    self.event_data["deltaY"] += 1
                     self.new_event.set()
                     self.logger.debug(f"X11 motion event: {line}")
 
@@ -658,11 +663,11 @@ class MouseListener(EventFactory):
                 if not line:
                     continue
 
-                if 'ButtonPress' in line:
+                if '(ButtonPress)' in line:
                     self.event_data["clicks"] += 1
                     self.new_event.set()
                     self.logger.debug(f"X11 button event: {line}")
-                elif 'Motion' in line:
+                elif '(Motion)' in line:
                     self.event_data["deltaX"] += 1
                     self.event_data["deltaY"] += 1
                     self.new_event.set()
