@@ -107,9 +107,8 @@ class KeyboardListener(EventFactory):
         self._thread.start()
 
     def _read_devinput(self):
-        """Read keyboard events from /dev/input/ devices, fall back to TTY monitoring"""
+        """Read keyboard events from /dev/input/ devices"""
         import glob
-        import select
         
         try:
             # Find all event devices
@@ -142,7 +141,6 @@ class KeyboardListener(EventFactory):
                 
                 if not open_devices:
                     self.logger.warning("No keyboard input devices found - falling back to TTY monitoring")
-                    self._read_tty_activity()
                     return
                     
                 self.logger.info(f"Monitoring {len(open_devices)} keyboard input devices")
@@ -161,13 +159,9 @@ class KeyboardListener(EventFactory):
                     except:
                         ready = []
                     
-                    # If no events after 10 seconds, assume /dev/input not working and fall back
+                    # If no events after 10 seconds, reset counter (don't switch backends mid-thread)
                     if not ready:
                         no_events_count += 1
-                        if no_events_count > 100:  # 100 * 0.1s = 10 seconds
-                            self.logger.warning("No /dev/input events for 10 seconds - switching to display/TTY monitoring")
-                            self._read_tty_activity()
-                            return
                     else:
                         no_events_count = 0
                         last_event_time = time.time()
@@ -203,8 +197,6 @@ class KeyboardListener(EventFactory):
                         pass
         except Exception as e:
             self.logger.error(f"Error in keyboard _read_devinput: {e}", exc_info=True)
-            # Last resort: fall back to TTY monitoring
-            self._read_tty_activity()
 
     def _read_tty_activity(self):
         """Fallback: Detect keyboard activity via display server (X11/Wayland) or process activity"""
@@ -505,13 +497,13 @@ class MouseListener(EventFactory):
                     except:
                         ready = []
                     
-                    # If no events after 10 seconds, assume /dev/input not working and fall back
+                    # If no events after 10 seconds, just log (don't switch backends mid-thread)
                     if not ready:
                         no_events_count += 1
                         if no_events_count > 100:  # 100 * 0.1s = 10 seconds
-                            self.logger.warning("No /dev/input mouse events for 10 seconds - switching to X11 monitoring")
-                            self._read_x11_mouse_activity()
-                            return
+                            if no_events_count == 101:  # Log only once
+                                self.logger.warning("No /dev/input mouse events for 10 seconds - may need X11/libinput monitoring")
+                            no_events_count = 101  # Cap at 101 to avoid logging repeatedly
                     else:
                         no_events_count = 0
                     
@@ -557,9 +549,6 @@ class MouseListener(EventFactory):
                         pass
         except Exception as e:
             self.logger.error(f"Error in mouse _read_devinput: {e}", exc_info=True)
-            if self._read_x11_mouse_activity():
-                return
-            self._read_libinput_mouse_activity()
 
         
     def _read_libinput_mouse_activity(self):
