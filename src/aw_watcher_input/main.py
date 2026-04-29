@@ -1,28 +1,21 @@
-import argparse
 import logging
 from datetime import datetime, timezone
 from time import sleep
-from typing import Optional
 
 import aw_client
+import click
 from aw_core import Event
-
 from .aw_watcher_afk.listeners import KeyboardListener, MouseListener
 
 logger = logging.getLogger(__name__)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="ActivityWatch input watcher.")
-    parser.add_argument("--testing", action="store_true", help="run in testing mode")
-    return parser.parse_args()
-
-
-def main(testing: Optional[bool] = None):
-    if testing is None:
-        testing = parse_args().testing
-
-    logging.basicConfig(level=logging.INFO)
+@click.command()
+@click.option("--testing", is_flag=True)
+def main(testing: bool):
+    logging.basicConfig(level=logging.DEBUG)
+    # Suppress pynput errors (Python 3.13 compatibility issue)
+    logging.getLogger("pynput").setLevel(logging.CRITICAL)
     logger.info("Starting watcher...")
     client = aw_client.ActivityWatchClient("aw-watcher-input", testing=testing)
     client.wait_for_start()
@@ -38,6 +31,9 @@ def main(testing: Optional[bool] = None):
     keyboard.start()
     mouse = MouseListener()
     mouse.start()
+
+    logger.info(f"Keyboard listener alive: {keyboard.is_alive()}")
+    logger.info(f"Mouse listener alive: {mouse.is_alive()}")
 
     now = datetime.now(tz=timezone.utc)
 
