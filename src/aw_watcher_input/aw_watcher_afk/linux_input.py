@@ -123,7 +123,14 @@ class LinuxInputMonitor:
             for fd in ready:
                 try:
                     chunk = os.read(fd, _EVENT_SIZE * 64)
-                except OSError:
+                except OSError as e:
+                    if e.errno in (19, 9):
+                        self._fds.pop(fd, None)
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                    
                     continue
                 for offset in range(0, len(chunk) - (len(chunk) % _EVENT_SIZE), _EVENT_SIZE):
                     _, _, event_type, code, value = struct.unpack(

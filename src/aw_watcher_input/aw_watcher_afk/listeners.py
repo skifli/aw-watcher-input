@@ -19,7 +19,7 @@ from collections import defaultdict
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 # Fix pynput's xorg handler bug before importing Listener
 def _patch_pynput_xorg():
@@ -78,11 +78,27 @@ class KeyboardListener(EventFactory):
         self._stop_event = threading.Event()
         self._thread = None
         self._use_devinput = False
+        self._use_linux_monitor = False
+        self._linux_cursor = 0
 
     def start(self):
+        if sys.platform.startswith("linux"):
+            try:
+                from .linux_input import start_monitor
+
+                self._use_devinput = True
+                self._use_linux_monitor = True
+                self._stop_event.clear()
+                start_monitor()
+                self.logger.debug("Using shared Linux input monitor for keyboard")
+                return
+            except Exception as e:
+                self.logger.debug(
+                    f"Shared Linux input monitor unavailable: {e}, falling back"
+                )
+
         # Skip pynput on Python 3.13 - use direct /dev/input reading instead
         # pynput's xorg module doesn't deliver events on Python 3.13+
-        import sys
         if sys.version_info >= (3, 13):
             self.logger.debug("Python 3.13+: Using /dev/input fallback directly (pynput broken)")
             self._use_devinput = True
@@ -153,6 +169,9 @@ class KeyboardListener(EventFactory):
                 last_event_time = time.time()
                 
                 while not self._stop_event.is_set():
+                    if not fds:
+                        self.logger.warning("No readable keyboard devices remaining")
+                        break
                     # Use select to wait for data with a timeout
                     try:
                         ready, _, _ = select.select(fds, [], [], 0.1)
@@ -187,6 +206,18 @@ class KeyboardListener(EventFactory):
                                         self.new_event.set()
                                         self.logger.info(f"Key press detected")
                         except (BlockingIOError, OSError) as e:
+                            if isinstance(e, OSError) and e.errno in (19, 9):
+                                self.logger.info(
+                                    "Keyboard device disconnected: %s", device_path
+                                )
+                                if fd in fds:
+                                    fds.remove(fd)
+                                open_devices = [d for d in open_devices if d[0] != fd]
+                                try:
+                                    os.close(fd)
+                                except OSError:
+                                    pass
+                                continue
                             self.logger.debug(f"Read error on {device_path}: {e}")
                     
             finally:
@@ -315,8 +346,21 @@ class KeyboardListener(EventFactory):
                                 self.new_event.set()
                                 self.logger.debug("Detected I/O write activity (simulated keypress)")
                                 last_io_stats['write'] = current
+                self._stop_event.wait(0.1)
             except:
-                pass
+                self._stop_event.wait(0.5)
+
+    def _refresh_from_linux_monitor(self):
+        if not self._use_linux_monitor:
+            return
+
+        from .linux_input import snapshot
+
+        data, new_cursor, has_new = snapshot("keyboard", self._linux_cursor)
+        if has_new:
+            self._linux_cursor = new_cursor
+            self.event_data["presses"] += data.get("presses", 0)
+            self.new_event.set()
 
     def _try_libinput_activity(self):
         """Try to detect keyboard activity via libinput debug-events."""
@@ -375,7 +419,15 @@ class KeyboardListener(EventFactory):
             self._stop_event.wait(0.1)
 
     def stop(self):
-        if self._use_devinput:
+        if self._use_linux_monitor:
+            self._stop_event.set()
+            try:
+                from .linux_input import stop_monitor
+
+                stop_monitor()
+            except Exception:
+                pass
+        elif self._use_devinput:
             self._stop_event.set()
             if self._thread:
                 self._thread.join(timeout=1.0)
@@ -387,6 +439,13 @@ class KeyboardListener(EventFactory):
                 pass
 
     def is_alive(self) -> bool:
+        if self._use_linux_monitor:
+            try:
+                from .linux_input import monitor_alive
+
+                return monitor_alive()
+            except Exception:
+                return False
         if self._use_devinput:
             return self._thread is not None and self._thread.is_alive()
         return self._listener is not None and self._listener.is_alive()
@@ -401,6 +460,14 @@ class KeyboardListener(EventFactory):
             self.new_event.set()
         except Exception as e:
             self.logger.debug(f"Error in on_press: {e}")
+
+    def has_new_event(self) -> bool:
+        self._refresh_from_linux_monitor()
+        return super().has_new_event()
+
+    def next_event(self) -> dict:
+        self._refresh_from_linux_monitor()
+        return super().next_event()
 
     def on_release(self, key):
         try:
@@ -420,6 +487,8 @@ class MouseListener(EventFactory):
         self._stop_event = threading.Event()
         self._thread = None
         self._use_devinput = False
+        self._use_linux_monitor = False
+        self._linux_cursor = 0
 
     def _reset_data(self):
         self.event_data = defaultdict(int)
@@ -428,9 +497,23 @@ class MouseListener(EventFactory):
         )
 
     def start(self):
+        if sys.platform.startswith("linux"):
+            try:
+                from .linux_input import start_monitor
+
+                self._use_devinput = True
+                self._use_linux_monitor = True
+                self._stop_event.clear()
+                start_monitor()
+                self.logger.debug("Using shared Linux input monitor for mouse")
+                return
+            except Exception as e:
+                self.logger.debug(
+                    f"Shared Linux input monitor unavailable: {e}, falling back"
+                )
+
         # Skip pynput on Python 3.13 - use direct /dev/input reading instead
         # pynput's xorg module doesn't deliver events on Python 3.13+
-        import sys
         if sys.version_info >= (3, 13):
             self.logger.debug("Python 3.13+: Using /dev/input fallback directly (pynput broken)")
             self._use_devinput = True
@@ -491,6 +574,9 @@ class MouseListener(EventFactory):
                 no_events_count = 0
                 
                 while not self._stop_event.is_set():
+                    if not fds:
+                        self.logger.warning("No readable mouse devices remaining")
+                        break
                     # Use select to wait for data with a timeout
                     try:
                         ready, _, _ = select.select(fds, [], [], 0.1)
@@ -539,6 +625,18 @@ class MouseListener(EventFactory):
                                             self.new_event.set()
                                             self.logger.debug(f"Mouse click detected")
                         except (BlockingIOError, OSError) as e:
+                            if isinstance(e, OSError) and e.errno in (19, 9):
+                                self.logger.info(
+                                    "Mouse device disconnected: %s", device_path
+                                )
+                                if fd in fds:
+                                    fds.remove(fd)
+                                open_devices = [d for d in open_devices if d[0] != fd]
+                                try:
+                                    os.close(fd)
+                                except OSError:
+                                    pass
+                                continue
                             self.logger.debug(f"Read error: {e}")
                     
             finally:
@@ -717,7 +815,15 @@ class MouseListener(EventFactory):
             self.logger.error(f"Error in mouse TTY fallback: {e}")
 
     def stop(self):
-        if self._use_devinput:
+        if self._use_linux_monitor:
+            self._stop_event.set()
+            try:
+                from .linux_input import stop_monitor
+
+                stop_monitor()
+            except Exception:
+                pass
+        elif self._use_devinput:
             self._stop_event.set()
             if self._thread:
                 self._thread.join(timeout=1.0)
@@ -729,9 +835,29 @@ class MouseListener(EventFactory):
                 pass
 
     def is_alive(self) -> bool:
+        if self._use_linux_monitor:
+            try:
+                from .linux_input import monitor_alive
+
+                return monitor_alive()
+            except Exception:
+                return False
         if self._use_devinput:
             return self._thread is not None and self._thread.is_alive()
         return self._listener is not None and self._listener.is_alive()
+
+    def _refresh_from_linux_monitor(self):
+        if not self._use_linux_monitor:
+            return
+
+        from .linux_input import snapshot
+
+        data, new_cursor, has_new = snapshot("mouse", self._linux_cursor)
+        if has_new:
+            self._linux_cursor = new_cursor
+            for key in ("clicks", "deltaX", "deltaY", "scrollX", "scrollY"):
+                self.event_data[key] += data.get(key, 0)
+            self.new_event.set()
 
     def on_move(self, x, y):
         try:
@@ -767,6 +893,14 @@ class MouseListener(EventFactory):
             self.new_event.set()
         except Exception as e:
             self.logger.debug(f"Error in on_scroll: {e}")
+
+    def has_new_event(self) -> bool:
+        self._refresh_from_linux_monitor()
+        return super().has_new_event()
+
+    def next_event(self) -> dict:
+        self._refresh_from_linux_monitor()
+        return super().next_event()
 
 
 class GamepadListener(EventFactory):
