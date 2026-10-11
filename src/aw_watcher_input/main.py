@@ -2,6 +2,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from time import sleep
+from typing import Optional
 
 import aw_client
 import click
@@ -12,15 +13,21 @@ logger = logging.getLogger(__name__)
 
 
 @click.command()
+@click.option("--host", default=None, help="Hostname of the aw-server to connect to.")
+@click.option(
+    "--port", default=None, type=int, help="Port of the aw-server to connect to."
+)
 @click.option("--testing", is_flag=True)
-def main(testing: bool):
+def main(testing: bool, host: Optional[str], port: Optional[int]):
     level_name = os.environ.get("AW_LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
     logging.basicConfig(level=level)
     # Suppress pynput errors (Python 3.13 compatibility issue)
     logging.getLogger("pynput").setLevel(logging.CRITICAL)
     logger.info("Starting watcher...")
-    client = aw_client.ActivityWatchClient("aw-watcher-input", testing=testing)
+    client = aw_client.ActivityWatchClient(
+        "aw-watcher-input", testing=testing, host=host, port=port
+    )
     client.wait_for_start()
     client.connect()
 
